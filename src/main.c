@@ -246,7 +246,7 @@ void process_command(const char *command, ChatHistory *history) {
         snprintf(
             summary,
             sizeof(summary),
-            "调用 chdir，目标目录：%s",
+            "Calling chdir, target directory: %s",
             path
         );
 
@@ -259,7 +259,7 @@ void process_command(const char *command, ChatHistory *history) {
             snprintf(
                 result,
                 sizeof(result),
-                "目录切换成功：%s",
+                "Directory changed successfully: %s",
                 cwd != NULL ? cwd : "Unknown"
             );
 
@@ -269,7 +269,7 @@ void process_command(const char *command, ChatHistory *history) {
             add_message(
                 history,
                 "Tool Result",
-                "目录切换失败。"
+                "Directory change failed"
             );
         }
 
@@ -287,7 +287,7 @@ void process_command(const char *command, ChatHistory *history) {
         snprintf(
             summary,
             sizeof(summary),
-            "执行本地命令：%s",
+            "Executing local command: %s",
             local_command
         );
 
@@ -307,7 +307,7 @@ void process_command(const char *command, ChatHistory *history) {
             add_message(
                 history,
                 "Tool Result",
-                "本地命令执行失败。"
+                "Failed to execute local command."
             );
         }
 
@@ -321,7 +321,7 @@ void process_command(const char *command, ChatHistory *history) {
         history,
         "Assistant",
         "## `429` Too many Requests\n\n"
-        "**服务器繁忙，请稍后再试。**"
+        "**busy服务器繁忙，请稍后再试**"
     );
 }
 
