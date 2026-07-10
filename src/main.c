@@ -5,14 +5,31 @@
 #include<time.h>
 #include <string.h> 
 
-void draw_context(WINDOW *context, char *command);
+#define MAX_COMMAND_LENGTH 256
+#define MAX_MESSAGES 8
+#define MAX_MESSAGE_LENGTH 2048
+
+typedef struct{
+    char role[32];
+    char content[MAX_MESSAGE_LENGTH];
+} Message;
+
+typedef struct{
+    Message messages[MAX_MESSAGES];
+    int count;
+} ChatHistory;
+
+void draw_context(WINDOW *context, const ChatHistory *history);
 void draw_status(WINDOW *status);
 void draw_input(WINDOW *input, char *command);
 void read_command(WINDOW *input, char *command);
+void process_command(const char *command, ChatHistory *history);
+void add_message(ChatHistory *history, const char *role, const char *content);
+int system_command(const char *command, char *output, size_t output_size);
 
 int main()
 {
-    initscr();          /* Start curses mode        */
+    initscr(); /* Start curses mode        */
     if (stdscr == NULL) {
         fprintf(stderr, "initscr() failed\n");
         exit(1);
@@ -32,21 +49,29 @@ int main()
     int start_y_input = height_context + height_status;
 
     
-    char command[256]; // 用于存储用户输入的命令
+    char command[MAX_COMMAND_LENGTH]; // 用于存储用户输入的命令
+
 
     WINDOW *context = subwin(stdscr, height_context, width, start_y_context, startx);
     WINDOW *status = subwin(stdscr, height_status, width, start_y_status, startx);
     WINDOW *input = subwin(stdscr, height_input, width, start_y_input, startx);
 
+    ChatHistory history = {0};
+    draw_context(context, &history);
+    draw_status(status);
+
     while(1){
-        draw_status(status);
         draw_input(input, command);
         
         if (strcmp(command, "/exit") == 0) {
             break; // 如果用户输入 "/exit"，则退出循环
         }
-
-        draw_context(context, command);
+        if (command[0] == '\0') {
+            continue; // 如果用户输入为空，则继续下一次循环
+        }
+        process_command(command, &history);
+        draw_context(context, &history);
+        draw_status(status);
 
         wrefresh(context);
         wrefresh(status);
@@ -54,19 +79,77 @@ int main()
 
     }  
 
-    refresh();
-
+    delwin(input);
+    delwin(status);
+    delwin(context);
+    
     endwin();           /* End curses mode        */
     return 0;
 }
 
-void draw_context(WINDOW *context, char *command) {
-    werase(context); // 清空窗口内容
+void draw_context(WINDOW *context, const ChatHistory *history) {
+    int height, width; // 获取窗口的高度和宽度
+    getmaxyx(context, height, width);
+    int rows_needed[MAX_MESSAGES];
+
+    for (int i = 0; i < history->count; i++) {
+        int rows = 1;
+        int column = 0;
+        const char *text = history->messages[i].content;
+        for (int j = 0; text[j] != '\0'; j++) {
+            if (text[j] == '\n') {
+                rows++;
+                column = 0;
+            } else {
+                column++;
+                if (column >= width - 2) { // 考虑边框
+                    rows++;
+                    column = 0;
+                }
+            }
+        }
+        rows++;
+        rows_needed[i] = rows;
+    }
+
+        int start = history->count;
+        int used_rows = 0;
+        for (int i = history->count - 1; i >= 0; i--) {
+            if (used_rows + rows_needed[i] > height - 2) { // 考虑边框
+                break;
+            }
+            used_rows += rows_needed[i];
+            start = i;
+        }
+
+    werase(context);    // 清空窗口内容
     box(context, 0, 0); // 重新绘制边框
-    mvwprintw(context, 1, 1, "command: %s", command); // 在窗口中写入文本
+    int y = 1; // 从第一行开始绘制内容
+    for (int i = start; i < history->count; i++)
+    {
+        if(y>= height - 1) break; // 如果超过窗口高度，停止绘制
+        wattron(context, A_BOLD); // 启用粗体
+        mvwprintw(context, y, 1, "%s:", history->messages[i].role);
+        wattroff(context, A_BOLD); // 禁用粗体
+        y++;
+        const char *text = history->messages[i].content;
+        int x = 1; // 从第一列开始绘制内容
+        for (int j = 0; text[j] != '\0' && y < height - 1; j++) {
+            if (text[j] == '\n') {
+                y++;
+                x = 1;
+            } 
+            if (y>= height - 1) break; 
+            mvwaddch(context, y, x, text[j]);
+            x++;
+        }
+        y += 2;
+    }
     wrefresh(context); // 刷新窗口以显示更改
-    ust_command(command); // 调用 ust_command 函数处理用户输入的命令
 }
+
+
+
 void draw_status(WINDOW *status) {
     const char *root_dir = "/home/hilda/daytest/daytest-practice/mini-agent"; // 根目录
     char *cwd = getcwd(NULL, 0); // 获取当前工作目录
@@ -154,22 +237,127 @@ void read_command(WINDOW *input, char *command) {
     }
 }
 
-void ust_command(char *command) {
-    if (strcmp(command, "/exit") == 0) {
-        // 如果用户输入 "/exit"，则退出程序
-        endwin(); // 结束 ncurses 模式
-        exit(0); // 退出程序
-    } else if (strncmp(command, "cd ", 3) == 0) {
-        // 如果用户输入 "cd "，则尝试更改目录
-        char *path = command + 3; // 获取路径部分
-        if (chdir(path) != 0) { // 尝试更改目录
-            perror("chdir failed"); // 如果失败，打印错误信息
+void process_command(const char *command, ChatHistory *history) {
+    add_message(history, "User", command);
+    if (strncmp(command, "cd ", 3) == 0) {
+        const char *path = command + 3;
+
+        char summary[MAX_MESSAGE_LENGTH];
+        snprintf(
+            summary,
+            sizeof(summary),
+            "调用 chdir，目标目录：%s",
+            path
+        );
+
+        add_message(history, "Tool Call", summary);
+
+        if (chdir(path) == 0) {
+            char *cwd = getcwd(NULL, 0);
+
+            char result[MAX_MESSAGE_LENGTH];
+            snprintf(
+                result,
+                sizeof(result),
+                "目录切换成功：%s",
+                cwd != NULL ? cwd : "Unknown"
+            );
+
+            add_message(history, "Tool Result", result);
+            free(cwd);
+        } else {
+            add_message(
+                history,
+                "Tool Result",
+                "目录切换失败。"
+            );
         }
-    } else {
-        // 对于其他命令，使用系统调用执行
-        int ret = system(command); // 执行命令
-        if (ret == -1) { // 如果执行失败
-            perror("system failed"); // 打印错误信息
-        }
+
+        return;
     }
+
+    /*
+     * 以 / 开头的内容作为本地命令。
+     * 跳过最前面的 /。
+     */
+    if (command[0] == '/' && command[1] != '\0') {
+        const char *local_command = command + 1;
+
+        char summary[MAX_MESSAGE_LENGTH];
+        snprintf(
+            summary,
+            sizeof(summary),
+            "执行本地命令：%s",
+            local_command
+        );
+
+        add_message(history, "Tool Call", summary);
+
+        char output[MAX_MESSAGE_LENGTH];
+
+        if (
+            system_command(
+                local_command,
+                output,
+                sizeof(output)
+            ) == 0
+        ) {
+            add_message(history, "Tool Result", output);
+        } else {
+            add_message(
+                history,
+                "Tool Result",
+                "本地命令执行失败。"
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * 普通文本固定回复。
+     */
+    add_message(
+        history,
+        "Assistant",
+        "## `429` Too many Requests\n\n"
+        "**服务器繁忙，请稍后再试。**"
+    );
+}
+
+
+void add_message(ChatHistory *history, const char *role, const char *content) {
+    // 将新消息添加到消息数组中
+    if (history->count >= MAX_MESSAGES) {
+        memmove(&history->messages[0], &history->messages[1], sizeof(Message)*(MAX_MESSAGES - 1)); // 将现有消息向后移动一位
+        history->count = MAX_MESSAGES - 1;
+    }
+    Message *message = &history->messages[history->count];
+    snprintf(message->role, sizeof(message->role), "%s", role); // 设置消息角色
+    snprintf(message->content, sizeof(message->content), "%s", content); // 设置消息内容
+    history->count++; // 增加消息计数
+}
+
+int system_command(const char *command, char *output, size_t output_size) {
+    // 使用 popen 执行命令并获取输出
+    FILE *fp = popen(command, "r");
+    if (fp == NULL) {
+        snprintf(output, output_size, "Failed to run command: %s", command);
+        return -1;
+    }
+
+    output[0] = '\0'; // 初始化输出为空字符串
+    char line[512];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        size_t used = strlen(output);
+        if (used >= output_size -1) {
+            break; // 如果输出缓冲区已满，停止读取
+        }
+        strncat(output, line, output_size - used - 1);
+    }
+    int result = pclose(fp); // 关闭文件指针并获取命令执行结果
+    if (output[0] == '\0') {
+        snprintf(output, output_size, "Command executed with no output.");
+    }
+    return result == -1? -1 : 0; // 返回命令执行结果
 }
